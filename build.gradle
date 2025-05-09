@@ -46,8 +46,8 @@ base {
     archivesName = mod_id
 }
 
-// Mojang ships Java 17 to end users from 1.18 to 1.20.4, so your mod should target Java 17.
-java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+// Mojang ships Java 21 to end users starting in 1.20.5, so mods should target Java 21.
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
 neoForge {
     // Specify the version of NeoForge to use.
@@ -139,7 +139,7 @@ dependencies {
     // compileOnly "mezz.jei:jei-${mc_version}-neoforge-api:${jei_version}"
     // We add the full version to localRuntime, not runtimeOnly, so that we do not publish a dependency on it
     // localRuntime "mezz.jei:jei-${mc_version}-neoforge:${jei_version}"
-    compileOnly "maven.modrinth:curios:7.4.3+1.20.4"
+    compileOnly "maven.modrinth:curios:Ru79duQs"
     compileOnly "curse.maven:sophisticated-backpacks-422301:5297718"
     compileOnly "curse.maven:sophisticated-core-618298:5296142"
 
@@ -147,9 +147,13 @@ dependencies {
     // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
     // The group id is ignored when searching -- in this case, it is "blank"
     // implementation "blank:coolmod-${mc_version}:${coolmod_version}"
+    // implementation "blank:snbt-converter-${minecraft_version}:0.1.0"
 
     // Example mod dependency using a file as dependency
     // implementation files("libs/coolmod-${mc_version}-${coolmod_version}.jar")
+    implementation files("libs/snbt-converter-${minecraft_version}-0.1.0.jar")
+    jarJar files("libs/snbt-converter-${minecraft_version}-0.1.0.jar")
+    additionalRuntimeClasspath files("libs/snbt-converter-${minecraft_version}-0.1.0.jar")
 
     // Example project dependency using a sister or child project:
     // implementation project(":myproject")

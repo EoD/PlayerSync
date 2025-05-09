@@ -4,6 +4,8 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.serialization.Dynamic;
 import net.minecraft.ChatFormatting;
 import net.minecraft.SharedConstants;
+import net.minecraft.core.Holder;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
@@ -21,14 +23,16 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.ItemLore;
 import net.minecraft.world.level.storage.WorldData;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
-import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
-import net.neoforged.neoforge.event.TickEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
@@ -46,7 +50,7 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-@Mod.EventBusSubscriber
+@EventBusSubscriber
 public class VanillaSync {
 
     public static void register() {}
@@ -273,79 +277,76 @@ public class VanillaSync {
         if (BuiltInRegistries.ITEM.containsKey(registryName)) {
             // Item exists (could be vanilla or a loaded mod item), restore normally
             try {
-                ItemStack restoredItem = ItemStack.of(compoundTag);
-                // Only return the restored item if the ItemStack.of did not unexpectedly
-                // returned an empty item
-                // Either the item is not empty, or it is empty and the original tag was also
-                // empty or it was an empty inventory slot
-                if (!restoredItem.isEmpty() || compoundTag.isEmpty()
-                        || registryName.equals(ResourceLocation.tryParse("air"))) {
-                    return restoredItem;
+                // In 1.20.6, we should use the ItemStack.parse method
+                Optional<ItemStack> optStack = ItemStack.parse(ServerLifecycleHooks.getCurrentServer().registryAccess(), compoundTag);
+                if (optStack.isPresent()) {
+                    return optStack.get();
                 }
                 // ItemStack.of unexpectedly returned empty for a known, non-air item.
                 PlayerSync.LOGGER.warn(
-                        "ItemStack.of returned EMPTY for known item {} with NBT: {}. Creating placeholder as fallback.",
+                        "ItemStack.parse returned empty for known item {} with NBT: {}. Creating placeholder as fallback.",
                         registryName, nbtString);
             } catch (Exception e) {
-                PlayerSync.LOGGER.error(
-                        "Error creating ItemStack for known item {} with NBT: {}. Creating placeholder as fallback.",
-                        registryName, nbtString, e);
+                PlayerSync.LOGGER.error("Error deserializing item {}", registryName, e);
             }
         }
 
-        // Create placeholder
+        return createPlaceholderItem(registryName, serializedNbt, compoundTag.getInt("count"));
+    }
+
+
+    // New helper method to create placeholder items using the component system
+    private static ItemStack createPlaceholderItem(ResourceLocation registryName, String serializedNbt, int count) {
         PlayerSync.LOGGER.debug("Item {} not found in registry. Creating placeholder.", registryName);
-        ItemStack placeholder = new ItemStack(Items.PAPER);
+        // Always use 1 paper and encode the amount within the placeholder tag to avoid stacking
+        ItemStack placeholder = new ItemStack(Items.PAPER, 1);
 
-        CompoundTag placeholderNbt = placeholder.getOrCreateTag();
-        // Store the original serialized NBT string, not the parsed CompoundTag string
-        placeholderNbt.putString("playersync:original_item_nbt", serializedNbt);
-        placeholderNbt.putString("playersync:original_item_id", registryName.toString());
+        // Create a CompoundTag with our custom data
+        CompoundTag customData = new CompoundTag();
+        customData.putString("playersync:original_item_nbt", serializedNbt);
+        customData.putString("playersync:original_item_id", registryName.toString());
+        customData.putUUID("playersync:unique_id", UUID.randomUUID());
 
-        // Add a unique UUID to ensure the item is unstackable
-        // Stacked placerholders would be converted into a single item when restoring item
-        placeholderNbt.putUUID("playersync:unique_id", UUID.randomUUID());
-
-        // Add display name and lore
-        CompoundTag displayTag = placeholderNbt.getCompound("display");
-        if (!placeholderNbt.contains("display"))
-            placeholderNbt.put("display", displayTag);
-
+        // Set custom name component
         String placeholderItemTitleOverride = JdbcConfig.ITEM_PLACEHOLDER_TITLE_OVERRIDE.get();
-        displayTag.putString("Name", Component.Serializer.toJson(
-                Component
-                        .literal(placeholderItemTitleOverride != null && !placeholderItemTitleOverride.isBlank()
-                                ? placeholderItemTitleOverride
-                                : Component.translatable("playersync.item_placeholder_title").getString())
-                        .setStyle(Style.EMPTY.withColor(ChatFormatting.RED).withItalic(true))));
+        Component nameComponent = Component
+            .literal(placeholderItemTitleOverride != null && !placeholderItemTitleOverride.isBlank()
+                ? placeholderItemTitleOverride
+                : Component.translatable("playersync.item_placeholder_title").getString())
+            .setStyle(Style.EMPTY.withColor(ChatFormatting.RED).withItalic(true));
+        placeholder.set(DataComponents.CUSTOM_NAME, nameComponent);
 
-        ListTag loreList = new ListTag();
+        // Create lore list for description
+        List<Component> loreList = new ArrayList<>();
+
         String placeholderItemDetails = registryName.toString();
-
-        // add a stack size if it is available
-        PlayerSync.LOGGER.warn("Item {}: {}", registryName, compoundTag);
-        int placeholderItemAmount = compoundTag.getInt("Count");
-        if (placeholderItemAmount > 1) {
-            placeholderItemDetails = placeholderItemAmount + "x " + placeholderItemDetails;
+        if (count > 1) {
+            placeholderItemDetails = count + "x " + placeholderItemDetails;
         }
 
-        loreList.add(StringTag.valueOf(Component.Serializer.toJson(
-                Component.literal(placeholderItemDetails)
-                        .setStyle(Style.EMPTY.withColor(ChatFormatting.GRAY).withItalic(false)))));
-        // add newline
-        loreList.add(StringTag.valueOf(Component.Serializer.toJson(Component.literal(""))));
+        // Add item details to lore
+        loreList.add(Component.literal(placeholderItemDetails)
+            .setStyle(Style.EMPTY.withColor(ChatFormatting.GRAY).withItalic(false)));
+        loreList.add(Component.literal(""));
 
+        // Add description lines to lore
         String placeholderItemDescriptionOverride = JdbcConfig.ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE.get();
-        String placeholderItemDescriptionLines = placeholderItemDescriptionOverride != null && ! placeholderItemDescriptionOverride.isBlank()
-                ? placeholderItemDescriptionOverride
-                : Component.translatable("playersync.item_placeholder_description").getString();
+        String placeholderItemDescriptionLines = placeholderItemDescriptionOverride != null && !placeholderItemDescriptionOverride.isBlank()
+            ? placeholderItemDescriptionOverride
+            : Component.translatable("playersync.item_placeholder_description").getString();
 
         for (String descriptionLine : placeholderItemDescriptionLines.split("\n")) {
-            loreList.add(StringTag.valueOf(Component.Serializer.toJson(
-                    Component.literal(descriptionLine)
-                            .setStyle(Style.EMPTY.withColor(ChatFormatting.DARK_GRAY)))));
+            loreList.add(Component.literal(descriptionLine)
+                .setStyle(Style.EMPTY.withColor(ChatFormatting.DARK_GRAY)));
         }
-        displayTag.put("Lore", loreList);
+
+        // Set the lore component
+        placeholder.set(DataComponents.LORE, new ItemLore(loreList));
+
+        // Store our custom data in the tag
+        CompoundTag tag = new CompoundTag();
+        tag.put("PlayerSync", customData);
+        placeholder.save(ServerLifecycleHooks.getCurrentServer().registryAccess(), tag);
 
         return placeholder;
     }
@@ -458,22 +459,33 @@ public class VanillaSync {
     // Helper function to get the NBT string to be saved
     // If item is a placeholder, get original NBT; otherwise, get current NBT
     private static String getNbtForStorage(ItemStack itemStack) {
-        if (itemStack.is(Items.PAPER) && itemStack.hasTag() && itemStack.getTag().contains("playersync:original_item_nbt", Tag.TAG_STRING)) {
-            // It's our placeholder, retrieve the original NBT string
-            return itemStack.getTag().getString("playersync:original_item_nbt");
-        } else {
-            // It's a normal item or empty, serialize its current NBT
-            return serialize(serializeNBT(itemStack).toString());
+        if (itemStack.is(Items.PAPER)) {
+            // Get the item's full NBT data
+            CompoundTag tag = new CompoundTag();
+            itemStack.save(ServerLifecycleHooks.getCurrentServer().registryAccess(), tag);
+
+            // Check if it contains our custom PlayerSync data
+            if (tag.contains("PlayerSync")) {
+                CompoundTag playerSyncData = tag.getCompound("PlayerSync");
+                if (playerSyncData.contains("playersync:original_item_nbt", Tag.TAG_STRING)) {
+                    // It's our placeholder, retrieve the original NBT string
+                    return playerSyncData.getString("playersync:original_item_nbt");
+                }
+            }
         }
+
+        // It's a normal item or empty, serialize its current NBT
+        return serialize(serializeNBT(itemStack).toString());
     }
 
     public static CompoundTag serializeNBT(ItemStack itemStack) {
         if (itemStack == null || itemStack.isEmpty()) {
             return new CompoundTag();
         }
-        // Serialize the ItemStack to NBT
+
+        // Save the ItemStack to NBT using the new system
         CompoundTag compoundTag = new CompoundTag();
-        itemStack.save(compoundTag);
+        compoundTag = (CompoundTag) itemStack.save(ServerLifecycleHooks.getCurrentServer().registryAccess(), compoundTag);
         // Adding data version to allow newer version of Minecraft to properly update the itemstack from the db
         NbtUtils.addCurrentDataVersion(compoundTag);
         return compoundTag;
@@ -517,11 +529,11 @@ public class VanillaSync {
         }
 
         // Effects
-        Map<MobEffect, MobEffectInstance> effects = player.getActiveEffectsMap();
+        Map<Holder<MobEffect>, MobEffectInstance> effects = player.getActiveEffectsMap();
         Map<Integer, String> effectMap = new HashMap<>();
-        for (Map.Entry<MobEffect, MobEffectInstance> entry : effects.entrySet()) {
-            CompoundTag effectTag = entry.getValue().save(new CompoundTag());
-            effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey()), serialize(effectTag.toString()));
+        for (Map.Entry<Holder<MobEffect>, MobEffectInstance> entry : effects.entrySet()) {
+            Tag effectTag = entry.getValue().save();
+            effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey().value()), serialize(effectTag.toString()));
         }
 
         // Advancements
@@ -599,7 +611,7 @@ public class VanillaSync {
     static int tick = 0;
 
     @SubscribeEvent
-    public static void onUpdate(TickEvent.LevelTickEvent event) throws SQLException {
+    public static void onUpdate(LevelTickEvent.Post event) throws SQLException {
         tick++;
         if (tick == 1800) {
             tick = 0;
@@ -615,34 +627,32 @@ public class VanillaSync {
 
     //AutoSave
     @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent event) {
+    public static void onServerTick(ServerTickEvent.Post event) {
         // Run at the end phase to avoid interfering with game logic
-        if (event.phase == TickEvent.Phase.END) {
-            autoSaveTickCounter++;
-            if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
-                autoSaveTickCounter = 0;
-                // Retrieve the current server instance
-                MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-                if (server != null) {
-                    // Iterate through all online players
-                    for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                        executorService.submit(() -> {
-                            try {
-                                // Call the same store method used in logout and file save events.
-                                store(player, false);
-                            } catch (Exception e) {
-                                PlayerSync.LOGGER.error("Error auto-saving player " + player.getUUID(), e);
-                            }
-                        });
-                        executorService.submit(() -> {
-                            try {
-                                new ModsSupport().StoreCurios(player, false);
-                            } catch (SQLException e) {
-                                PlayerSync.LOGGER.error("Error auto-saving Curios data for player " + player.getUUID(), e);
-                            }
-                        });
+        autoSaveTickCounter++;
+        if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
+            autoSaveTickCounter = 0;
+            // Retrieve the current server instance
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server != null) {
+                // Iterate through all online players
+                for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                    executorService.submit(() -> {
+                        try {
+                            // Call the same store method used in logout and file save events.
+                            store(player, false);
+                        } catch (Exception e) {
+                            PlayerSync.LOGGER.error("Error auto-saving player " + player.getUUID(), e);
+                        }
+                    });
+                    executorService.submit(() -> {
+                        try {
+                            new ModsSupport().StoreCurios(player, false);
+                        } catch (SQLException e) {
+                            PlayerSync.LOGGER.error("Error auto-saving Curios data for player " + player.getUUID(), e);
+                        }
+                    });
 
-                    }
                 }
             }
         }
