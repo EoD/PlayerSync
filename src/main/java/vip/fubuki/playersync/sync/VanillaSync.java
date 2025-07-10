@@ -297,6 +297,12 @@ public class VanillaSync {
 
     // New helper method to create placeholder items using the component system
     private static ItemStack createPlaceholderItem(ResourceLocation registryName, String serializedNbt, int count) {
+        if (count <= 0) {
+            PlayerSync.LOGGER.error(
+                    "Invalid placeholder creation for {}. Please report this issue on Github. snbt: {}, count: {}",
+                    registryName, serializedNbt, count);
+            count = 1;
+        }
         PlayerSync.LOGGER.debug("Item {} not found in registry. Creating placeholder.", registryName);
         // Always use 1 paper and encode the amount within the placeholder tag to avoid stacking
         ItemStack placeholder = new ItemStack(Items.PAPER, 1);
