@@ -358,12 +358,18 @@ public class VanillaSync {
     }
 
     public static CompoundTag snbtToFixedCompoundTag(String nbtString) throws CommandSyntaxException {
+        PlayerSync.LOGGER.debug("snbtToFixedCompoundTag() - snbt:        " + nbtString);
         CompoundTag parsedTag = TagParser.parseTag(nbtString);
+        PlayerSync.LOGGER.debug("snbtToFixedCompoundTag() - parsedTag:   " + parsedTag);
 
         int currentDataVersion = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
         int snbtDataVersion = NbtUtils.getDataVersion(parsedTag, 500);
 
         Dynamic<Tag> dynamicTagInput = new Dynamic<>(NbtOps.INSTANCE, parsedTag);
+
+        PlayerSync.LOGGER.debug("snbtToFixedCompoundTag() - dynamicTag:  " + dynamicTagInput);
+        PlayerSync.LOGGER.debug("snbtToFixedCompoundTag() - Detected saved version " + snbtDataVersion);
+        PlayerSync.LOGGER.debug("snbtToFixedCompoundTag() - Detected current version " + currentDataVersion);
 
         Dynamic<Tag> updatedDynamicTag = DataFixers.getDataFixer().update(
                 References.ITEM_STACK,
@@ -371,6 +377,7 @@ public class VanillaSync {
                 snbtDataVersion,
                 currentDataVersion);
         CompoundTag compoundTag = (CompoundTag) updatedDynamicTag.getValue();
+        PlayerSync.LOGGER.debug("snbtToFixedCompoundTag() - compoundTag: " + compoundTag);
         return compoundTag;
     }
 
